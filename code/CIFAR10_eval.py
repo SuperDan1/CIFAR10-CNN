@@ -7,7 +7,6 @@
 # @Software: PyCharm
 # 通过这个程序，可以在滑动平均模型上做测试
 
-import time
 import tensorflow as tf
 
 # 加载CIFAR10_inference和CIFAR10_train.py中定义的常量和函数
@@ -20,7 +19,7 @@ import math
 
 FLAGS = tf.app.flags.FLAGS
 
-tf.app.flags.DEFINE_integer('EVAL_INTERVAL_SECS', 30,
+tf.app.flags.DEFINE_integer('EVAL_INTERVAL_SECS', 200,
                             "How often to run the eval")
 
 tf.app.flags.DEFINE_integer('num_examples', 10000,
@@ -34,9 +33,9 @@ def evaluate():
             # read data for testing
             if not CIFAR10_train.data_dir:
                 raise ValueError('Please supply a data_dir')
-            # TODO:BATCH_SIZE改成FLAGS
+
             images, labels = CIFAR10_input.inputs(eval_data=True, data_dir=CIFAR10_train.data_dir,
-                                                  batch_size=CIFAR10_train.BATCH_SIZE)
+                                                  batch_size=CIFAR10_train.FLAGS.BATCH_SIZE)
 
         # 直接通过调用函数来计算前向传播的结果。因为测试时不关注正则化损失的值
         # 所以这里用于计算正则化损失的函数被设为None
@@ -47,7 +46,7 @@ def evaluate():
 
 
         # 通过变量重命名的方式来加载模型，这样在前向传播的过程中就不需要调用滑动平均的函数来获取平均值了。
-        variable_averages = tf.train.ExponentialMovingAverage(CIFAR10_train.MOVING_AVERAGE_DECAY)
+        variable_averages = tf.train.ExponentialMovingAverage(CIFAR10_train.FLAGS.MOVING_AVERAGE_DECAY)
         variables_to_restore = variable_averages.variables_to_restore()
         saver = tf.train.Saver(variables_to_restore)
 
@@ -72,10 +71,10 @@ def evaluate():
                     return
                                 # result = sess.run(merged, feed_dict={: xs_test, y_: ys_onehot})
                 # writer.add_summary(result, global_step)
-                # TODO:BATCH_SIZE改成FLAGS
-                num_iter = int(math.ceil(FLAGS.num_examples / CIFAR10_train.BATCH_SIZE))
+
+                num_iter = int(math.ceil(FLAGS.num_examples / CIFAR10_train.FLAGS.BATCH_SIZE))
                 true_count = 0
-                total_sample_count = num_iter * CIFAR10_train.BATCH_SIZE
+                total_sample_count = num_iter * CIFAR10_train.FLAGS.BATCH_SIZE
                 i = 0
                 while i < num_iter and not coord.should_stop():
                     predictions = sess.run([top_k_op])

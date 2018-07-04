@@ -3,18 +3,20 @@
 # @Time    : 2018/5/25 22:38
 # @Author  : SuperDan
 # @Site    : 
-# @File    : LeNet5_inference.py
+# @File    : CIFAR10_inference.py
 # @Software: PyCharm
 
 import tensorflow as tf
 import CIFAR10_input
-# 配置神经网络的参数
-INPUT_NODE = 576
-OUTPUT_NODE = 10
 
+# 配置神经网络的参数
+# Global constants describing the CIFAR-10 data set
 IMAGE_SIZE = CIFAR10_input.IMAGE_SIZE                                                         # 输入层的图片大小
 NUM_CHANNELS = 3                                                                              # 输入层的深度
-NUM_LABELS = 10                                                                               # 分类一共10类
+NUM_LABELS = CIFAR10_input.NUM_CLASSES                                                        # 分类一共10类
+
+INPUT_NODE = 576
+OUTPUT_NODE = 10
 
 # 第一层卷积层的尺寸和深度
 CONV1_DEEP = 64
@@ -26,8 +28,9 @@ CONV2_SIZE = 5
 
 # 全连接层的节点个数
 FC1_SIZE = 384
+FC2_SIZE = 192
 
-REGULARAZTION_RATE = 0.001
+REGULARAZTION_RATE = 0.004
 
 # 定义卷积神经网络的前向传播过程。这里添加一个参数train，用于区分训练过程和测试过程。在这个程序中将用到dropout方法，
 # 这个方法可以进一步提升模型可靠性并防止过拟合，这个方法只在训练过程使用。
@@ -44,7 +47,7 @@ def inference(input_tensor, train, regularizer='L2'):
     with tf.variable_scope('layer1-conv1'):
         with tf.device('/cpu:0'):
             conv1_weights = tf.get_variable('weight', [CONV1_SIZE, CONV1_SIZE, NUM_CHANNELS, CONV1_DEEP], initializer=
-                                        tf.truncated_normal_initializer(stddev=1e-4))
+                                        tf.truncated_normal_initializer(stddev=0.01))
             conv1_biases = tf.get_variable('bias', [CONV1_DEEP], initializer=tf.constant_initializer(0.0))
 
         # 使用边长为5，深度为64的过滤器，过滤器移动的步长为1，且使用全0填充
@@ -70,11 +73,11 @@ def inference(input_tensor, train, regularizer='L2'):
             conv2_weights = tf.get_variable('weight', [CONV2_SIZE, CONV2_SIZE, CONV1_DEEP, CONV2_DEEP], initializer=
                                         tf.truncated_normal_initializer(stddev=0.1))
             conv2_biases = tf.get_variable('bias', [CONV2_DEEP], initializer=tf.constant_initializer(0.1))
-        tf.summary.histogram('layer-conv', conv2_weights)
 
         # 使用边长为5，深度为64的过滤器，过滤器移动的步长为1，且使用全0填充。
         conv2 = tf.nn.conv2d(norm1, conv2_weights, strides=[1,1,1,1], padding='SAME')
         relu2 = tf.nn.relu(tf.nn.bias_add(conv2, conv2_biases))
+        tf.summary.histogram('conv2_weights', conv2_weights)
 
     # norm2
     with tf.name_scope('layer5-norm2'):
@@ -83,8 +86,7 @@ def inference(input_tensor, train, regularizer='L2'):
 
     # 实现第六层池化层的前向传播过程。输入为12*12*64， 输出为6*6*64
     with tf.name_scope('layer6-pool2'):
-        with tf.device('/cpu:0'):
-            pool2 = tf.nn.max_pool(norm2, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
+        pool2 = tf.nn.max_pool(norm2, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
 
     # 声明第七层全连接层的变量并实现前向传播过程。这一层的输入时拉直之后的一组向量。这一层和之前介绍的全连接层
     # 基本一致，唯一区别是引入了dropout的概念。dropout在训练时会随机将部分节点的输出改为0。dropout可以避免过拟合问题
@@ -100,28 +102,42 @@ def inference(input_tensor, train, regularizer='L2'):
         # 通过tf.reshape函数将第四层的输出变成一个batch的向量
         reshaped = tf.reshape(pool2, [-1, nodes])
         with tf.device('/cpu:0'):
-            fc1_weights = tf.get_variable('weight', [nodes, FC_SIZE], initializer=
+            fc1_weights = tf.get_variable('weight', [nodes, FC1_SIZE], initializer=
                                            tf.truncated_normal_initializer(stddev=0.04))
-            fc1_biases = tf.get_variable('bias', [FC_SIZE], initializer=tf.constant_initializer(0.1))
-        tf.summary.histogram('layer-fc', fc1_weights)
+            fc1_biases = tf.get_variable('bias', [FC1_SIZE], initializer=tf.constant_initializer(0.1))
+        tf.summary.histogram('fc1_weights', fc1_weights)
 
         # 只有全连接层的权重需要加入正则化
-        if regularizer != None:
+        if train:
             tf.add_to_collection('losses', regularize(fc1_weights))
         fc1 = tf.nn.relu(tf.matmul(reshaped, fc1_weights) + fc1_biases)
-        if train:
-            fc1 = tf.nn.dropout(fc1, 0.5)
+        # if train:
+        #     fc1 = tf.nn.dropout(fc1, 0.5)
 
-    # 声明第八层全连接层的变量并实现前向传播过程。输入为512长度的向量，输出为10的向量。这一层的输出通过softmax之后
-    # 得到了最后的分类结果。
+    # 声明第八层全连接层的变量并实现前向传播过程。输入为384长度的向量，输出为192的向量。
     with tf.variable_scope('layer8-fc2'):
         with tf.device('/cpu:0'):
-            fc2_weights = tf.get_variable('weight', [FC_SIZE, NUM_LABELS], initializer=
-                                          tf.truncated_normal_initializer(stddev=1/384.0))
-            fc2_biases = tf.get_variable('bias', [NUM_LABELS], initializer=tf.constant_initializer(0.1))
-        tf.summary.histogram('layer-fc', fc2_weights)
+            fc2_weights = tf.get_variable('weight', [FC1_SIZE, FC2_SIZE], initializer=
+                                           tf.truncated_normal_initializer(stddev=0.04))
+            fc2_biases = tf.get_variable('bias', [FC2_SIZE], initializer=tf.constant_initializer(0.1))
+        tf.summary.histogram('fc2_weights', fc2_weights)
 
-        if regularizer != None:
+        # 只有全连接层的权重需要加入正则化
+        if train:
             tf.add_to_collection('losses', regularize(fc2_weights))
-        logit = tf.matmul(fc1, fc2_weights) + fc2_biases
+        fc2 = tf.nn.relu(tf.matmul(fc1, fc2_weights) + fc2_biases)
+        # if train:
+        #     fc2 = tf.nn.dropout(fc2, 0.5)
+
+    # 声明第九层sotmax层的变量并实现前向传播过程。输入为192长度的向量，输出为10的向量。
+    with tf.variable_scope('layer9-softmax'):
+        with tf.device('/cpu:0'):
+            softmax_weights = tf.get_variable('weight', [FC2_SIZE, NUM_LABELS], initializer=
+                                          tf.truncated_normal_initializer(stddev=1/192.0))
+            softmax_biases = tf.get_variable('bias', [NUM_LABELS], initializer=tf.constant_initializer(0.0))
+        tf.summary.histogram('softmax_weights', softmax_weights)
+
+        # if train:
+        #     tf.add_to_collection('losses', regularize(softmax_weights))
+        logit = tf.matmul(fc2, softmax_weights) + softmax_biases
     return logit

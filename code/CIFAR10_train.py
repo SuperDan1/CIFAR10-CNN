@@ -3,26 +3,48 @@
 # @Time    : 2018/5/21 21:18
 # @Author  : SuperDan
 # @Site    : 
-# @File    : LeNet5_train.py
+# @File    : CIFAR10_train.py
 # @Software: PyCharm
 import warnings
 warnings.filterwarnings('ignore')
 import os
 import tensorflow as tf
-# 加载LeNet5_inference.py中定义的常量和前向传播的函数
+# 加载CIFAR10_inference.py中定义的常量和前向传播的函数
 import numpy as np
 import CIFAR10_inference
 import CIFAR10_input
-import time
+from datetime import datetime
 
+import sys
+import tarfile
+from six.moves import urllib
+
+DATA_URL = 'http://www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz'
 # 配置神经网络的参数
-BATCH_SIZE = 128
-LEARNING_RATE_BASE = 0.01
-LEARNING_RATE_DECAY = 0.99
+"""
+    tf.app.flags主要用于处理命令行参数的解析工作，其实可以理解为一个
+    封装好的argparse包（一种结构化的数据存储格式，类似于json、xml）。
+    使用方法：首先通过tf.app.flags来调用flags.py文件，之后用
+    flags.DEFINE_interger/float来添加命令行参数，而FLAGS=tf.app.flags.FLAGS
+    可以实例化这个解析参数的类从对应的命令行参数取出参数
+"""
+NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN = CIFAR10_input.NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN
 
-train_epoch = 3
-TRAINING_STEPS = train_epoch * 50000
-MOVING_AVERAGE_DECAY = 0.9999
+FLAGS = tf.app.flags.FLAGS
+tf.app.flags.DEFINE_integer('BATCH_SIZE', 128,
+                            """训练批次大小""")
+tf.app.flags.DEFINE_float('LEARNING_RATE_BASE', 0.1,
+                            """初始的学习率""")
+tf.app.flags.DEFINE_float('LEARNING_RATE_DECAY', 0.9,
+                            """学习率下降速率""")
+tf.app.flags.DEFINE_float('MOVING_AVERAGE_DECAY', 0.9999,
+                            """滑动模型参数""")
+tf.app.flags.DEFINE_integer('train_epoch', 100,
+                            """训练轮数""")
+tf.app.flags.DEFINE_integer('TRAINING_STEPS', int(FLAGS.train_epoch * NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN / 128),
+                            """总共数据大小""")
+tf.app.flags.DEFINE_bool('log_device_placement', False,
+                            """是否打印设备分配情况""")
 
 # 数据地址
 data_dir = '../data-bin'
@@ -32,11 +54,11 @@ MODEL_SAVE_PATH = '../model/'
 MODEL_NAME = 'model.ckpt'
 
 def CIFAR10_train():
-    # 将处理输入数据的计算都放在名字wei'input'的命名空间下
+    # 将处理输入数据的计算都放在名字为'input'的命名空间下
     with tf.name_scope('input'):
         # 读取数据
-        images_train, lables_train = CIFAR10_input.inputs(eval_data=False, data_dir=data_dir, batch_size=BATCH_SIZE)
-        images_test, lables_test = CIFAR10_input.inputs(eval_data=True, data_dir=data_dir, batch_size=BATCH_SIZE)
+        images_train, lables_train = CIFAR10_input.distorted_inputs( data_dir=data_dir, batch_size=FLAGS.BATCH_SIZE)
+        images_test, lables_test = CIFAR10_input.inputs(eval_data=True, data_dir=data_dir, batch_size=FLAGS.BATCH_SIZE)
         # 定义输入输出placeholder
         x = tf.placeholder(tf.float32,[None, CIFAR10_inference.IMAGE_SIZE, CIFAR10_inference.IMAGE_SIZE,
                                        CIFAR10_inference.NUM_CHANNELS], name='x-input')
@@ -49,20 +71,21 @@ def CIFAR10_train():
     # 将处理滑动平均相关的计算都放在一个命名空间下
     with tf.name_scope('moving_average'):
         # 定义滑动平均操作
-        variable_average = tf.train.ExponentialMovingAverage(MOVING_AVERAGE_DECAY, global_step)
+        variable_average = tf.train.ExponentialMovingAverage(FLAGS.MOVING_AVERAGE_DECAY, global_step)
         variables_average_op = variable_average.apply(tf.trainable_variables())
 
     # 将计算损失函数相关的计算都放在一个命名空间下
     with tf.name_scope('loss_function'):
         cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y, labels=tf.argmax(y_, 1))
         cross_entropy_mean = tf.reduce_mean(cross_entropy)
-        loss = cross_entropy_mean + tf.add_n(tf.get_collection('losses'))
+        tf.add_to_collection('losses', cross_entropy_mean)
+        loss = tf.add_n(tf.get_collection('losses'))
         tf.summary.scalar('loss_function', loss)
 
     # 将定义学习率、优化方法以及每一轮训练需要执行的操作放在一个命名空间
     with tf.name_scope('train_step'):
-        learning_rate = tf.train.exponential_decay(LEARNING_RATE_BASE,global_step,50000 / BATCH_SIZE,
-                                               LEARNING_RATE_DECAY)
+        learning_rate = tf.train.exponential_decay(FLAGS.LEARNING_RATE_BASE,global_step,50000 / FLAGS.BATCH_SIZE,
+                                                   FLAGS.LEARNING_RATE_DECAY, staircase=True)
         tf.summary.scalar('learning_rate', learning_rate)
         train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss, global_step)
         # 顺序执行
@@ -93,7 +116,7 @@ def CIFAR10_train():
         # 对标签进行onehot编码
         ys_test_onehot = np.eye(10, dtype=float)[ys_test]
         # 在训练过程中不再测试模型在验证数据上的表现，验证和测试的过程会有一个独立的程序来完成
-        for i in range(TRAINING_STEPS):
+        for i in range(FLAGS.TRAINING_STEPS):
             xs, ys = sess.run([images_train, lables_train])
             # 对标签进行onehot编码
             ys_onehot = np.eye(10, dtype=float)[ys]
@@ -114,12 +137,11 @@ def CIFAR10_train():
                 # 输出当前的训练情况。这里只输出了模型在当前训练batch上的损失函数大小。通过损失函数的大小可以大概了解
                 # 训练的情况。在验证集上的正确率信息会有一个单独的程序来 生成。
 
-
-                print('After %d training steps, loss on training batch is %g'% (i, loss_value))
-                train_accuracy = accuracy_train.eval(feed_dict={x:xs,y_:ys_onehot})
-                print('After %d training steps, accuracy on training batch is %g'% (i, train_accuracy))
+                train_accuracy = accuracy_train.eval(feed_dict={x: xs, y_: ys_onehot})
                 test_accuracy = accuracy_test.eval(feed_dict={x: xs_test, y_: ys_test_onehot})
-                print('validation accuracy=%g' % test_accuracy)
+                print('%s:After %d training steps, loss = %g, accuracy = %g, validation accuracy=%g'% (datetime.now(), i,
+                                                                    loss_value, train_accuracy, test_accuracy))
+
                 # 保存当前的模型。这里给出了global_step参数，这样可以让每个被保存的文件名末尾加上训练的轮数，比如
                 # 'model.ckpt-1000'表示训练1000轮之后得到的模型
                 saver.save(sess, os.path.join(MODEL_SAVE_PATH, MODEL_NAME), global_step=global_step)
@@ -129,9 +151,35 @@ def CIFAR10_train():
         coord.join(threads)
     writer.close()
 
+# 下载数据集，并解压，展开到其默认位置
+def maybe_download_and_extract():
+  """Download and extract the tarball from Alex's website."""
+  dest_directory = data_dir
+  if not os.path.exists(dest_directory):
+    os.mkdir(dest_directory)
+  filename = DATA_URL.split('/')[-1]
+  filepath = os.path.join(dest_directory, filename)
+  if not os.path.exists(filepath):
+    def _progress(count, block_size, total_size):
+      sys.stdout.write('\r>> Downloading %s %.1f%%' % (filename,
+          float(count * block_size) / float(total_size) * 100.0))
+      sys.stdout.flush()
+    filepath, _ = urllib.request.urlretrieve(DATA_URL, filepath,
+                                             reporthook=_progress)
+    print()
+    statinfo = os.stat(filepath)
+    print('Successfully downloaded', filename, statinfo.st_size, 'bytes.')
+    tarfile.open(filepath, 'r:gz').extractall(dest_directory)
+
 def main(argv=None):
+    maybe_download_and_extract()
     CIFAR10_train()
 
+"""
+    下述第一行代码表示如果当前是从其他模块调用的该模块程序，则不会运行main函数
+    而如果就是直接运行的该模块程序，则会运行main函数。
+    第二行的核心意思是执行程序中main函数，并解析命令行参数flag。
+"""
 if __name__ == '__main__':
     tf.app.run()
 
